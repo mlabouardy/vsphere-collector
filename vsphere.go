@@ -1,21 +1,3 @@
-/*
-Copyright (c) 2015 VMware, Inc. All Rights Reserved.
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-    http://www.apache.org/licenses/LICENSE-2.0
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
-/*
-This example program shows how the `finder` and `property` packages can
-be used to navigate a vSphere inventory structure using govmomi.
-*/
-
 package main
 
 import (
@@ -24,15 +6,12 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"sort"
 	"strings"
-	"text/tabwriter"
 
 	"github.com/vmware/govmomi"
 	"github.com/vmware/govmomi/find"
 	"github.com/vmware/govmomi/object"
 	"github.com/vmware/govmomi/property"
-	"github.com/vmware/govmomi/units"
 	"github.com/vmware/govmomi/vim25/mo"
 	"github.com/vmware/govmomi/vim25/types"
 )
@@ -68,12 +47,6 @@ const (
 	envInsecure = "GOVMOMI_INSECURE"
 )
 
-type ByName []mo.VirtualMachine
-
-func (n ByName) Len() int           { return len(n) }
-func (n ByName) Swap(i, j int)      { n[i], n[j] = n[j], n[i] }
-func (n ByName) Less(i, j int) bool { return n[i].Name < n[j].Name }
-
 var urlDescription = fmt.Sprintf("ESX or vCenter URL [%s]", envURL)
 var urlFlag = flag.String("url", GetEnvString(envURL, "https://username:password@host/sdk"), urlDescription)
 
@@ -85,11 +58,7 @@ func exit(err error) {
 	os.Exit(1)
 }
 
-func GatherDataStoreMetrics(ctx context.Context, c *govmomi.Client, dss []*object.Datastore) {
-	// Find datastores in datacenter
-
-	pc := property.DefaultCollector(c.Client)
-
+func GatherDataStoreMetrics(ctx context.Context, c *govmomi.Client, pc *property.Collector, dss []*object.Datastore) {
 	// Convert datastores into list of references
 	var refs []types.ManagedObjectReference
 	for _, ds := range dss {
@@ -103,22 +72,21 @@ func GatherDataStoreMetrics(ctx context.Context, c *govmomi.Client, dss []*objec
 		exit(err)
 	}
 
-	// Print summary per datastore
-	tw := tabwriter.NewWriter(os.Stdout, 2, 0, 2, ' ', 0)
-	fmt.Fprintf(tw, "Name:\tType:\tCapacity:\tFree:\n")
 	for _, ds := range dst {
-		fmt.Fprintf(tw, "%s\t", ds.Summary.Name)
-		fmt.Fprintf(tw, "%s\t", ds.Summary.Type)
-		fmt.Println(ds.Summary.Url)
-		fmt.Fprintf(tw, "%s\t", units.ByteSize(ds.Summary.Capacity))
-		fmt.Fprintf(tw, "%s\t", units.ByteSize(ds.Summary.FreeSpace))
-		fmt.Fprintf(tw, "\n")
+
+		records := make(map[string]interface{})
+		tags := make(map[string]string)
+
+		tags["name"] = ds.Summary.Name
+		tags["type"] = ds.Summary.Type
+		tags["url"] = ds.Summary.Url
+
+		records["capacity"] = ds.Summary.Capacity
+		records["freespace"] = ds.Summary.FreeSpace
 	}
-	tw.Flush()
 }
 
-func GatherVMMetrics(ctx context.Context, c *govmomi.Client, vms []*object.VirtualMachine) {
-	pc := property.DefaultCollector(c.Client)
+func GatherVMMetrics(ctx context.Context, c *govmomi.Client, pc *property.Collector, vms []*object.VirtualMachine) {
 	// Convert datastores into list of references
 	var refs []types.ManagedObjectReference
 	for _, vm := range vms {
@@ -132,47 +100,52 @@ func GatherVMMetrics(ctx context.Context, c *govmomi.Client, vms []*object.Virtu
 		exit(err)
 	}
 
-	// Print name per virtual machine
-	tw := tabwriter.NewWriter(os.Stdout, 2, 0, 2, ' ', 0)
-	fmt.Println("Virtual machines found:", len(vmt))
-	sort.Sort(ByName(vmt))
 	for _, vm := range vmt {
 
-		fmt.Fprintf(tw, "%s\n", vm.Name)
-		fmt.Println(vm.Config.GuestFullName)
-		fmt.Println(vm.Config.Hardware.MemoryMB)
-		fmt.Println(vm.Config.Hardware.NumCPU)
-		fmt.Println(vm.Summary.QuickStats.HostMemoryUsage)
-		fmt.Println(vm.Summary.QuickStats.GuestMemoryUsage)
-		fmt.Println(vm.Summary.QuickStats.OverallCpuUsage)
-		fmt.Println(vm.Summary.QuickStats.OverallCpuDemand)
-		fmt.Println(vm.Summary.QuickStats.SwappedMemory)
-		fmt.Println(vm.Summary.QuickStats.UptimeSeconds)
-		//fmt.Println(vm.Summary.Guest.HostName)
-		// fmt.Println(vm.Summary.Guest.ToolsRunningStatus)
-		fmt.Println(vm.Summary.Storage.Committed)
-		fmt.Println(vm.Summary.Storage.Uncommitted)
-		fmt.Println(vm.Summary.Runtime.MaxCpuUsage)
-		fmt.Println(vm.Summary.Runtime.MaxMemoryUsage)
-	}
+		records := make(map[string]interface{})
+		tags := make(map[string]string)
 
-	tw.Flush()
+		tags["name"] = vm.Name
+		tags["guest_full_name"] = vm.Config.GuestFullName
+		tags["connection_state"] = vm.Summary.Runtime.ConnectionState
+		tags["overall_status"] = vm.Summary.OverallStatus
+		tags["vm_path_name"] = vm.Summary.Config.VmPathName
+		tags["ip_address"] = vm.Summary.Guest.IpAddress
+		tags["hostname"] = vm.Summary.Guest.HostName
+		tags["guest_id"] = vm.Config.GuestId
+		tags["is_guest_tools_running"] = vm.Summary.Guest.ToolsRunningStatus
+
+		records["mem_mb"] = vm.Config.Hardware.MemoryMB
+		records["num_cpu"] = vm.Config.Hardware.NumCPU
+		records["host_mem_usage"] = vm.Summary.QuickStats.HostMemoryUsage
+		records["guest_mem_usage"] = vm.Summary.QuickStats.GuestMemoryUsage
+		records["overall_cpu_usage"] = vm.Summary.QuickStats.OverallCpuUsage
+		records["overall_cpu_demand"] = vm.Summary.QuickStats.OverallCpuDemand
+		records["swap_mem"] = vm.Summary.QuickStats.SwappedMemory
+		records["uptime_sec"] = vm.Summary.QuickStats.UptimeSeconds
+		records["storage_committed"] = vm.Summary.Storage.Committed
+		records["storage_uncommitted"] = vm.Summary.Storage.Uncommitted
+		records["max_cpu_usage"] = vm.Summary.Runtime.MaxCpuUsage
+		records["max_mem_usage"] = vm.Summary.Runtime.MaxMemoryUsage
+		records["num_cores_per_socket"] = vm.Config.Hardware.NumCoresPerSocket
+
+	}
 }
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
+	//
 	flag.Parse()
 
 	// Parse URL from string
-	u, err := url.Parse(*urlFlag)
+	u, err := url.Parse(os.Getenv("GOVMOMI_URL"))
 	if err != nil {
 		exit(err)
 	}
 
 	// Connect and log in to ESX or vCenter
-	c, err := govmomi.NewClient(ctx, u, *insecureFlag)
+	c, err := govmomi.NewClient(ctx, u, string(os.Getenv("GOVMOMI_INSECURE")))
 	if err != nil {
 		exit(err)
 	}
@@ -187,18 +160,20 @@ func main() {
 	// Make future calls local to this datacenter
 	f.SetDatacenter(dc)
 
+	pc := property.DefaultCollector(c.Client)
+
 	dss, err := f.DatastoreList(ctx, "*")
 	if err != nil {
 		exit(err)
 	}
 
-	GatherDataStoreMetrics(ctx, c, dss)
+	GatherDataStoreMetrics(ctx, c, pc, dss)
 
 	// Find virtual machines in datacenter
 	vms, err := f.VirtualMachineList(ctx, "*")
 	if err != nil {
 		exit(err)
 	}
-	GatherVMMetrics(ctx, c, vms)
+	GatherVMMetrics(ctx, c, pc, vms)
 
 }
